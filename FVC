@@ -1,0 +1,275 @@
+#!/bin/bash
+
+function get_script_dir() {
+    local SOURCE_PATH="${BASH_SOURCE[0]}"
+    local SYMLINK_DIR
+    local SCRIPT_DIR
+    # Resolve symlinks recursively
+    while [ -L "$SOURCE_PATH" ]; do
+        # Get symlink directory
+        SYMLINK_DIR="$( cd -P "$( dirname "$SOURCE_PATH" )" >/dev/null 2>&1 && pwd )"
+        # Resolve symlink target (relative or absolute)
+        SOURCE_PATH="$(readlink "$SOURCE_PATH")"
+        # Check if candidate path is relative or absolute
+        if [[ $SOURCE_PATH != /* ]]; then
+            # Candidate path is relative, resolve to full path
+            SOURCE_PATH=$SYMLINK_DIR/$SOURCE_PATH
+        fi
+    done
+    # Get final script directory path from fully resolved source path
+    SCRIPT_DIR="$(cd -P "$( dirname "$SOURCE_PATH" )" >/dev/null 2>&1 && pwd)"
+    echo "$SCRIPT_DIR"
+}
+
+function usage() {
+	echo "Usage: FVC [-h, --help] [-r, --resumeRun=<results_directory>] [-o, --output=<results_directory>] [-p, --percentile=<percentile>] [-w, --windowSize=<window_size>] [INPUTFASTAONE] [INPUTFASTATWO]"
+	echo "Runs the complete fragment vector comparison pipeline between two groups of proteins to find the best regions of sequence and energetic match for each comparison."
+  	echo "Options:"
+  	echo "  -h, --help					Show this help message and exit."
+	echo "  -r, --resumeRun					If specified, uses the FVC.log file in the provided results directory to resume from a checkpoint."
+	echo "  -o, --output					If specified, output is written to this directory."
+	echo "  -p, --percentile		Specify the percentile above which to return comparisons. Defaults to 99.99th percentile."
+ 	echo "  -w, --windowSize 				Specify the window size to use for comparisons. Defaults to 10. If set to 'Length', the length of the shorter protein is used for each comparison."
+}
+
+function needsArg() {
+	if [ -z "$OPTARG" ]; then
+		echo "option requires an argument -- $OPT"
+		exit 1
+	fi
+}
+
+function noArgs() {
+	if [ ! -z "$OPTARG" ]; then
+		echo "option requires no arguments -- $OPT"
+		exit 1
+	fi
+}
+
+function parseFasta() {
+	if [ -f "$1" ] && [[ "$1" == *.fasta ]]; then
+		if [ $(grep ">" "$1" | wc -l) -eq 1 ]; then
+			cp "$1" "$2" 2>> "$3";
+		else
+			conda run -n FVC python "${scriptDir}/src/fastaSplitter.py" "$1" --OUTPUT "$2" --OVERWRITE 2>> "$3";
+		fi
+	elif [ -f "$1" ] && [[ "$1" != *.fasta ]]; then
+		echo "${1} is not a valid fasta file." >> "$3" && exit 1;
+	elif [ -d "$1" ]; then
+		find "$1" -type f -name "*.fasta" -print0 | while IFS= read -r -d $'\0' file; do
+			if [ $(grep ">" "$file" | wc -l) -eq 1 ]; then
+				cp "$file" "$2" 2>> "$3";
+			else
+				conda run -n FVC python "${scriptDir}/src/fastaSplitter.py" "$file" --OUTPUT "$2" --OVERWRITE 2 >> "$3";
+		fi
+		done
+	fi
+}
+
+# Command line argument parsing
+while getopts "ho:r:p:w:-:" OPT; do
+	if [ "$OPT" = "-" ]; then
+		OPT="${OPTARG%%=*}"
+		OPTARG="${OPTARG#"$OPT"}"
+		OPTARG="${OPTARG#=}"
+	fi
+	case $OPT in
+		h | help)
+			noArgs
+			usage
+			exit 0
+			;;
+		r | resumeRun)
+			needsArg
+			if [ -d "$OPTARG" ]; then
+				resultsDir="$OPTARG"
+			else
+				echo "Invalid results directory provided. $OPTARG" >&2
+				exit 1
+			fi
+			;;
+		o | output)
+			needsArg
+			resultsDir="$OPTARG"
+			timeStamp=$(date +%Y-%m-%d-%H.%M.%S)
+			;;
+		p | percentile)
+			needsArg
+			if [[ "$OPTARG" =~ ^[0-9\.]+$ && "$OPTARG" -ge 0 && "$OPTARG" -le 1 ]]; then
+				percentile="$OPTARG"
+			else
+				echo "Percentile must be a float between 0 and 1." >&2
+				exit 1
+			fi
+			;;
+		w | windowSize)
+			needsArg
+			shopt -s nocasematch
+			if [[ ("$OPTARG" =~ ^[0-9]+$ && "$OPTARG" -ge 1) || "$OPTARG" =~ "length" ]]; then
+				windowSize="$OPTARG"
+			else
+				echo "Window Size must be an integer greater than 0 or length." >&2
+				shopt -u nocasematch
+				exit 1
+			fi
+			shopt -u nocasematch
+			;;
+		\?)
+			usage
+     		exit 1
+			;;
+		*)
+			echo "illegal option -- $OPT" >&2
+			usage
+			exit 1
+			;;
+	esac
+done
+
+# Set defaults for window size and percentile if they're unspecified
+if [ -z "$windowSize" ]; then
+	windowSize="10"
+fi
+
+if [ -z "$percentile" ]; then
+	percentile=".9999"
+fi
+
+# Move arguments over to parse input fasta files
+shift $((OPTIND - 1))
+
+# Ensure that at a minimum, two sets of input fasta files have been specified
+if [ -z "$1" ] || [ -z "$2" ]; then
+	echo "Not enough fasta files were provided."
+	usage
+	exit 1
+fi
+
+# Sets an environmental variable to let the pipeline steps know that they should run without displaying progress bars
+export FVC_PIPELINE="True"
+
+# Determines the root directory for the script
+scriptDir=$(get_script_dir)
+
+# Ensures the required conda environment exists 
+if ! conda env list | grep -q '^FVC\b' ; then
+	conda env create -y --file "${scriptDir}/reqs.yaml";
+fi
+
+# Create the results folder path if it isn't specified by the resumeRun or output options
+if [ -z "$resultsDir" ]; then
+	# Builds a timestamp for the output files
+	timeStamp=$(date +%Y-%m-%d-%H.%M.%S)
+	
+	# Create the results directory
+	resultsDir="${PWD}/FVCresults-${timeStamp}"
+fi
+
+# Make the results directory if it doesn't exist
+if [ ! -e "$resultsDir" ] || [ ! -d "$resultsDir" ]; then
+		mkdir "$resultsDir" > /dev/null 2>&1
+fi
+
+# Constructs the necessary paths for the log file and intermediate steps
+if [ -e "$resultsDir" ] && [ -d "$resultsDir" ]; then
+	logFile="$resultsDir/FVC.log"
+	splitOne="$resultsDir/tmp/splitFastasGroupOne"
+	splitTwo="$resultsDir/tmp/splitFastasGroupTwo"
+	eScapeOne="$resultsDir/eScape/$(basename $1 .fasta)"
+	eScapeTwo="$resultsDir/eScape/$(basename $2 .fasta)"
+	withSeqOne="$resultsDir/tmp/eScapeWithSequencesGroupOne"
+	withSeqTwo="$resultsDir/tmp/eScapeWithSequencesGroupTwo"
+fi
+
+# Create the log file if it doesn't exist
+if [ ! -e "$logFile" ]; then
+	echo -e "FVC Log for ${1} vs. ${2}\nWindow Size: ${windowSize}\nPercentile: ${percentile}. Began at ${timeStamp}" >> "$logFile"
+fi
+
+# Logs the sources for proteins which were compared
+if ! grep -q 'Checkpoint 1:' "$logFile" ; then
+
+	# Create temporary folders for holding intermediate steps
+	mkdir "$resultsDir/tmp" "$splitOne" "$splitTwo" "$withSeqOne" "$withSeqTwo" > /dev/null 2>&1
+
+	# Add a checkpoint statement to the log file that setup is complete
+	echo "Checkpoint 1: Setup Complete for FVC of ${1} vs. ${2} at $(date +%Y-%m-%d-%H.%M.%S)" >> "$logFile"
+fi
+
+# Handles splitting the first provided fasta file if necessary, including support for providing a directory of fasta files
+if ! grep -q 'Checkpoint 2:' "$logFile" ; then
+	parseFasta "$1" "$splitOne" "$logFile"
+	if [ $? -eq 0 ]; then
+		# Add a checkpoint statement to the log file with the number of fastas parsed
+		fastasInGroup=$(find "$splitOne" -type f -name "*.fasta" -print | wc -l | tr -d "[:space:]")
+		echo "Checkpoint 2: ${fastasInGroup} proteins parsed from $1 at $(date +%Y-%m-%d-%H.%M.%S)." >> "$logFile"
+	else
+		exit 1
+	fi
+fi
+
+# Handles splitting the second provided fasta file if necessary, including support for providing a directory of fasta files
+if ! grep -q 'Checkpoint 3:' "$logFile" ; then
+	parseFasta "$2" "$splitTwo" "$logFile"
+	if [ $? -eq 0 ]; then
+		# Add a checkpoint statement to the log file with the number of fastas parsed
+		fastasInGroup=$(find "$splitTwo" -type f -name "*.fasta" -print | wc -l | tr -d "[:space:]")
+		echo "Checkpoint 3: ${fastasInGroup} proteins parsed from $2 at $(date +%Y-%m-%d-%H.%M.%S)" >> "$logFile"
+	else
+		exit 1
+	fi
+fi
+
+# Runs eScape on the first group of fasta files
+if ! grep -q 'Checkpoint 4:' "$logFile" ; then
+	perl "${scriptDir}/src/eScape/eScape_predictor_REP.pl" "$splitOne" "$eScapeOne" 1>/dev/null 2>> "$logFile"
+	if [ $? -eq 0 ]; then
+		echo "Checkpoint 4: eScape for ${1} completed at $(date +%Y-%m-%d-%H.%M.%S)" >> "$logFile"
+	else
+		exit 1
+	fi
+fi
+
+# Runs eScape on the second group of fasta files
+if ! grep -q 'Checkpoint 5:' "$logFile" ; then
+	perl "${scriptDir}/src/eScape/eScape_predictor_REP.pl" "$splitTwo" "$eScapeTwo" 1>/dev/null 2>> "$logFile"
+	if [ $? -eq 0 ]; then
+		echo "Checkpoint 5: eScape for ${2} completed at $(date +%Y-%m-%d-%H.%M.%S)" >> "$logFile"
+	else
+		exit 1
+	fi
+fi
+
+# Finds regions of similarity between the two groups of proteins
+if ! grep -q 'Checkpoint 6:' "$logFile" ; then
+	conda run -n FVC python "${scriptDir}/src/fragmentVectorComparison.py" "$eScapeOne" "$eScapeTwo" --windowSize ${windowSize} --percentile ${percentile} --output "$resultsDir" 2>> "$logFile"
+	if [ $? -eq 0 ]; then
+		echo "Checkpoint 6: Regions of similarity calculated for ${1} and ${2} at $(date +%Y-%m-%d-%H.%M.%S)" >> "$logFile"
+	else
+		exit 1
+	fi
+fi
+
+# Summarize best matches between the two groups of proteins
+if ! grep -q 'Checkpoint 7:' "$logFile" ; then
+	conda run -n FVC python "${scriptDir}/src/findBestMatches.py" "$resultsDir" 2>>"$logFile"
+	if [ $? -eq 0 ]; then
+		echo "Checkpoint 7: Summary of best matches written for ${1} and ${2} at $(date +%Y-%m-%d-%H.%M.%S)" >> "$logFile"
+	else
+		exit 1
+	fi
+fi
+
+
+# Cleanup temporary files
+if ! grep -q 'Checkpoint 8:' "$logFile" ; then
+	find "$resultsDir/tmp" -delete > /dev/null 2>&1
+	find "$resultsDir/eScape" -type f -name "*.eScapev8_log" -delete > /dev/null 2>&1
+	if [ $? -eq 0 ]; then
+		echo "Checkpoint 8: Temporary files removed. FVC for ${1} and ${2} completed at $(date +%Y-%m-%d-%H.%M.%S)" >> "$logFile"
+	else
+		exit 1
+	fi
+else
+	echo "FVC for ${1} and ${2} has already been completed."
+fi

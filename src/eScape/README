@@ -1,0 +1,46 @@
+## QUICK README TO SET UP eSCAPE.
+
+## TO RUN eScape
+   eScape reads in directory of fasta files (*.fasta).
+
+	   >eScape_predictor_REP.pl [FASTA DIR] [OUTPUT DIR]
+
+   OUTPUT FILES: 
+	1) *eScapev8_pred
+	Prediction output contains 8 columns, one for each 
+	thermodynamic descriptor for both the native and denatured ensemble
+	(Native: dG, dHap, dHp, TdS; Denatured: dG, dHap, dHp, TdS).
+
+	Rows are for each position in the sequence.
+
+	2) *eScapev8_log
+	Report when default tripeptide values are used when unrepresented 
+	in the eScape library.
+
+## Additional smoothing of eScape predictions can be useful for more
+	domain aggregate analysis. Smoothed predictions can be obtained 
+	using:
+
+  	    >eScape_predictor_domain_REP.pl [FASTA DIR] [OUTPUT DIR]
+
+   OUTPUT FILES:
+	1) *.eScapev8_domainX_avgpred (X = sliding window size for averaging)
+	    Same as eScape8_log except predictions has been averaged with 
+		respective sliding window size:
+
+	i.e. - 	*.eScapev8_domain1_avgpred = window size of 1
+			(0 residues flanking central residue of interest.)
+		*.eScapev8_domain11_avgpred = window size of 11
+			(5 residues flanking central residue of interest.)
+
+	2) *.eScapev8_domainX_sdpred (X = sliding window size for averaging)
+            Corresponding standard deviation values for respective sliding
+                window size
+
+	
+### Summarize averaged dG predictions for each sliding window size as calculated with eScape_predictor_domain_REP.pl
+
+	   >eScape_Domain_Summary_dG.pl
+	
+		run in directory containing *.eScapev8_domain*_avgpred files.
+
