@@ -1,11 +1,9 @@
-#include <asm-generic/errno-base.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
 #include <glob.h>
 #include <libgen.h>
 #include <limits.h>
-#include <linux/limits.h>
 #include <math.h>
 #include <omp.h>
 #include <stdarg.h>
@@ -17,6 +15,7 @@
 #include <time.h>
 #ifdef __linux__
 #include <unistd.h>
+#include <linux/limits.h>
 #endif
 
 /* HACK: Manually set PATH_MAX to 4096 if a given POSIX system doesn't define it
