@@ -1,7 +1,7 @@
 # Fragment Vector Comparison (FVC) User Guide
 
 ## Getting Started
-0. If you are on MacOS, install gcc version 15 from Homebrew with `brew install gcc@15` and OpenMP with `brew install libomp` if you want to use the C implementation of FVC. For Linux distributions, the native gcc installation is usually sufficient, though you may need to install libomp through your distribution's package manager. Windows is not currently supported by the C implementation of FVC.
+0. If you are on MacOS, install gcc version 15 from Homebrew with `brew install gcc@15` and OpenMP with `brew install libomp` if you want to use the C implementation of FVC. Editing the Makefile to specifically use the installed gcc-15 may be necessary due to Apple's default aliasing of gcc. For Linux distributions, the native gcc installation is usually sufficient, though you may need to install libomp through your distribution's package manager. Windows is not currently supported by the C implementation of FVC.
 1. Run `./setup.sh` to automatically create the required conda environment.
 2. Aquire one or more fasta sequences for one or more organisms from a database that follows Uniprot header conventions.
     - These can contain any arbitrary number of proteins in each fasta file, provided that there's few enough that they fit in the RAM of your computer.
